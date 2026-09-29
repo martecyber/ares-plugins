@@ -1,0 +1,79 @@
+# Reusable workflow — called from each plugin's own repo instead of each one carrying its own
+# copy of this logic + publish_plugin.py. Runs in the CALLING repo's own context (its own
+# checkout, its own secrets via `secrets: inherit`) — this repo only supplies the workflow
+# definition and the publish script, never sees or needs any plugin's OVH credential itself.
+#
+# A calling repo's own .github/workflows/publish-plugin.yml is just:
+#
+#   name: Publish plugin
+#   on:
+#     push:
+#       tags: ["v*"]
+#     workflow_dispatch:
+#   jobs:
+#     publish:
+#       uses: martecyber/ares-plugins/.github/workflows/publish-plugin-reusable.yml@main
+#       secrets: inherit
+#
+# See PUBLISHING.md for the full design (why push:tags never actually fires this from an
+# automated release.yml, why runs-on is ubuntu-latest not self-hosted, etc.).
+
+name: Publish plugin (reusable)
+
+on:
+  workflow_call:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      # The CALLING plugin's own scoped credential (arn:...:bucket/plugins/<that-plugin-id>/* only)
+      # — never an admin one. See scoped-user-policy.json.template.
+      ARES_REPO_BUCKET: ${{ secrets.ARES_REPO_BUCKET }}
+      ARES_REPO_ENDPOINT_URL: ${{ secrets.ARES_REPO_ENDPOINT_URL }}
+      ARES_REPO_REGION: ${{ secrets.ARES_REPO_REGION }}
+      ARES_REPO_PUBLIC_BASE_URL: ${{ secrets.ARES_REPO_PUBLIC_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.ARES_REPO_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.ARES_REPO_SECRET_ACCESS_KEY }}
+
+    steps:
+      # Default checkout with no `repository:` override — this checks out the CALLING repo (the
+      # plugin), not this workflow's own martecyber/ares-plugins.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: 'zulu'
+          server-id: github
+
+      - name: Verify plugin.json version matches the tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          JSON_VERSION="$(python3 -c 'import json,sys; print(json.load(open("src/main/resources/plugin.json"))["version"])')"
+          if [ "$TAG_VERSION" != "$JSON_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match plugin.json's version ($JSON_VERSION)" >&2
+            exit 1
+          fi
+
+      # Same provided-scope compile against ares-sdk's (and, for the plugins that need it,
+      # ares-core's) own published artifact the calling plugin's pom.xml already resolves from
+      # GitHub Packages for its own CI. GITHUB_TOKEN is only needed for that resolution, not for
+      # anything publish_plugin.py itself does.
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mvn -B -ntp package -DskipTests
+
+      # Fetches THIS repo's (martecyber/ares-plugins) own publish_plugin.py into the calling
+      # plugin's workspace — the one script every plugin used to carry its own copy of.
+      - name: Fetch publish_plugin.py
+        run: curl -fsSL -o publish_plugin.py "https://raw.githubusercontent.com/martecyber/ares-plugins/main/publish_plugin.py"
+
+      - name: Install publish dependencies
+        run: pip install boto3
+
+      - name: Publish
+        run: |
+          JAR="$(ls target/*.jar | grep -v sources | grep -v javadoc)"
+          python3 publish_plugin.py --jar "$JAR" --plugin-json src/main/resources/plugin.json
