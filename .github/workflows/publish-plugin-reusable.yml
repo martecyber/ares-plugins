@@ -26,6 +26,11 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # contents: write — needed for the "Create/update the GitHub Release" step below. Reusable
+    # workflows need their own explicit grant; the caller's own `permissions:` block (release.yml
+    # already declares contents: write) isn't enough on its own.
+    permissions:
+      contents: write
     env:
       # The CALLING plugin's own scoped credential (arn:...:bucket/plugins/<that-plugin-id>/* only)
       # — never an admin one. See scoped-user-policy.json.template.
@@ -64,6 +69,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mvn -B -ntp package -DskipTests
+
+      # A GitHub Release with the jar attached, independent of the OVH marketplace upload below —
+      # gives a direct, auditable download link per version (useful for pinning a specific build,
+      # or for a plugin that for licensing reasons has no marketplace wiring at all, like
+      # ares-plugin-fortirecon/-crowdstrike's own hand-written release.yml, which creates releases
+      # the same way without ever calling this reusable workflow). `--clobber` on the upload path
+      # makes re-running a failed/retried publish safe instead of erroring on a duplicate asset.
+      - name: Create or update the GitHub Release for this tag, with the built jar attached
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          JAR="$(ls target/*.jar | grep -v sources | grep -v javadoc)"
+          PRERELEASE_FLAG=""
+          case "$TAG" in
+            *-alpha*|*-beta*|*-rc*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$JAR" --clobber
+          else
+            gh release create "$TAG" "$JAR" --title "$TAG" --generate-notes $PRERELEASE_FLAG
+          fi
 
       # Fetches THIS repo's (martecyber/ares-plugins) own publish_plugin.py into the calling
       # plugin's workspace — the one script every plugin used to carry its own copy of.
