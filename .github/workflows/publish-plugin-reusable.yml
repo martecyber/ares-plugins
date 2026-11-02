@@ -12,6 +12,9 @@
 #     workflow_dispatch:
 #   jobs:
 #     publish:
+#       permissions:
+#         contents: write
+#         packages: read
 #       uses: martecyber/ares-plugins/.github/workflows/publish-plugin-reusable.yml@main
 #       secrets: inherit
 #
@@ -26,11 +29,14 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # contents: write — needed for the "Create/update the GitHub Release" step below. Reusable
-    # workflows need their own explicit grant; the caller's own `permissions:` block (release.yml
-    # already declares contents: write) isn't enough on its own.
+    # contents: write — needed for the "Create/update the GitHub Release" step below.
+    # packages: read — Maven resolves ares-sdk from GitHub Packages (an explicit permissions block
+    # drops every scope not listed). A reusable workflow can't get more than its caller grants,
+    # so the calling job must declare these same two permissions too (see the header example);
+    # otherwise GitHub refuses to start the run ("startup_failure").
     permissions:
       contents: write
+      packages: read
     env:
       # The CALLING plugin's own scoped credential (arn:...:bucket/plugins/<that-plugin-id>/* only)
       # — never an admin one. See scoped-user-policy.json.template.
